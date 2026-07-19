@@ -116,6 +116,10 @@ image_id = "resolve:ssm:${module.pointer.ssm_parameter_name}"
 Then drive deploys against your ASG's name exactly as above. See
 [`examples/with-external-asg`](./examples/with-external-asg).
 
+Coming from dual-ASG blue/green with ALB weighted target groups? There is a
+step-by-step migration path — including what you get to delete at the end —
+in [docs/MIGRATING-FROM-BLUE-GREEN.md](./docs/MIGRATING-FROM-BLUE-GREEN.md).
+
 ## FAQ
 
 **Why not CodeDeploy?** CodeDeploy adds an on-host agent, an `appspec.yml`
