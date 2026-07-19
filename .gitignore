@@ -1,0 +1,29 @@
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Variable files that may hold secrets or environment specifics
+*.tfvars
+*.tfvars.json
+
+# Override files (local, per-developer)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration and plan output
+.terraformrc
+terraform.rc
+*.tfplan
+
+# Lock files are noisy for examples; keep the root module's if you want reproducible CI
+examples/**/.terraform.lock.hcl
+
