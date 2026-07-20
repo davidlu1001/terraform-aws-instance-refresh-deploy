@@ -221,3 +221,13 @@ Rejected alternative: teaching `deploy` to self-verify after the fact. A
 deploy-time check cannot see problems that develop later, and the operator
 running a deploy is already watching; the unattended window is where drift
 hides.
+
+The in-progress suppression has a blind spot: a refresh that never finishes
+(instances that never pass health checks can hold one open for a very long
+time) suppresses the drift checks indefinitely while `check` keeps reporting
+OK. `--max-refresh-minutes N` makes that window explicit by flagging an
+in-progress refresh older than N minutes as an anomaly. It is opt-in with no
+default because the right threshold is deployment policy — a function of
+fleet size, warmup, and checkpoint delays — not something the driver can
+guess; a wrong built-in default would page people during every legitimately
+slow roll of a large fleet.

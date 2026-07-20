@@ -252,6 +252,12 @@ A check that lands in the few seconds between a deploy's pointer write and
 its refresh starting will flag drift once; if that matters for your paging
 policy, alert on two consecutive failures.
 
+An in-progress refresh suppresses the drift checks (convergence is underway),
+which means a refresh that never finishes would hide drift indefinitely. Pass
+`--max-refresh-minutes N` to opt in to stuck-refresh detection: an in-progress
+refresh older than `N` minutes becomes an anomaly. Size `N` from your fleet —
+roughly `instances × (warmup + checkpoint delays)` plus slack.
+
 If the bad deploy's refresh is still running when you need to roll back, cancel
 it first — preflight refuses to start a refresh while one is in progress:
 

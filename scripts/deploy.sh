@@ -39,10 +39,12 @@
 #   --warmup S                 Override instance warmup (default: ASG grace period).
 #   --no-wait                  Return after starting the refresh; do not poll.
 #   --json                     Machine-readable output for status/current/history.
+#   --max-refresh-minutes N    check: treat an in-progress refresh older than N
+#                              minutes as an anomaly (off by default).
 #
 # Exit codes:
 #   0  success
-#   1  runtime/AWS error
+#   1  runtime error (failed aws CLI calls pass through their own exit codes)
 #   2  usage error
 #   3  missing dependency (aws, jq, or bash < 4)
 #   4  preflight gate failed
@@ -78,6 +80,7 @@ OPT_CHECKPOINT_DELAY=""
 OPT_WARMUP=""
 OPT_NO_WAIT=false
 OPT_JSON=false
+OPT_MAX_REFRESH_MIN=""
 OPT_ROLLBACK_TO=""
 OPT_HISTORY_N=10
 
@@ -484,6 +487,9 @@ cmd_status() {
 cmd_check() {
   local pointer refresh fleet in_progress rstatus
   local anomalies=()
+  if [[ -n "$OPT_MAX_REFRESH_MIN" && ! "$OPT_MAX_REFRESH_MIN" =~ ^[0-9]+$ ]]; then
+    die "$EXIT_USAGE" "--max-refresh-minutes expects a whole number of minutes."
+  fi
   pointer="$(pointer_current)"
   fleet="$(fleet_images_json)"
   # Refresh state is fetched AFTER the fleet on purpose: a deploy racing this
@@ -513,6 +519,26 @@ cmd_check() {
     fi
     if ((drifted > 0)); then
       anomalies+=("${drifted} instance(s) run an AMI other than the pointer with no refresh in progress")
+    fi
+  fi
+
+  # Opt-in stuck-refresh detection. An in-progress refresh suppresses the
+  # drift checks above, so a refresh that never finishes (instances that
+  # never pass health checks can hold one open for a very long time) would
+  # hide drift indefinitely while check keeps reporting OK.
+  if [[ "$in_progress" == "true" && -n "$OPT_MAX_REFRESH_MIN" ]]; then
+    local age_min
+    # -1 when StartTime is null (Pending) or unparseable: age unknown, skip.
+    age_min="$(printf '%s' "$refresh" | jq -r '
+      if .StartTime == null then -1
+      else (try (((now - (.StartTime
+                          | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
+                          | fromdateiso8601)) / 60) | floor) catch -1)
+      end')"
+    if ((age_min > OPT_MAX_REFRESH_MIN)); then
+      local refresh_id
+      refresh_id="$(printf '%s' "$refresh" | jq -r '.InstanceRefreshId')"
+      anomalies+=("refresh ${refresh_id} in progress for ${age_min}m, over --max-refresh-minutes ${OPT_MAX_REFRESH_MIN}; it may be stuck")
     fi
   fi
 
@@ -612,6 +638,7 @@ parse_args() {
       --warmup) OPT_WARMUP="$2"; shift 2 ;;
       --no-wait) OPT_NO_WAIT=true; shift ;;
       --json) OPT_JSON=true; shift ;;
+      --max-refresh-minutes) OPT_MAX_REFRESH_MIN="$2"; shift 2 ;;
       --to) OPT_ROLLBACK_TO="$2"; shift 2 ;;
       --previous) shift ;;
       -n) OPT_HISTORY_N="$2"; shift 2 ;;
@@ -631,7 +658,9 @@ parse_args() {
 }
 
 usage() {
-  sed -n '3,50p' "$0" | sed 's/^# \{0,1\}//'
+  # Print the header comment block (from line 3 to the first non-comment
+  # line) so the help text never drifts from a hardcoded line range.
+  awk 'NR < 3 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"
 }
 
 main() {

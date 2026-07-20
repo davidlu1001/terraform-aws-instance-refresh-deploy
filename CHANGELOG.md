@@ -4,6 +4,31 @@ All notable changes to this module are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`check` command** — `status` plus anomaly detection for unattended use
+  (cron/CI watchdogs). Exits `6` when the fleet will not converge on the
+  pointer by itself: pointer AMI not launchable (breaks every future
+  scale-out), fleet-vs-pointer drift or a mixed-AMI fleet with no refresh in
+  progress, a refresh that ended `Failed`/rolled back, and (with `--alarms`)
+  any alarm not `OK`. `--json` carries the anomaly list. Design: D8.
+- **`--max-refresh-minutes N`** (check, opt-in) — flags an in-progress
+  refresh older than `N` minutes as an anomaly, since an in-progress refresh
+  suppresses the drift checks and a stuck one would otherwise hide drift
+  indefinitely.
+
+### Fixed
+
+- `status`, `check`, and the deploy preflight crashed on ASGs whose refresh
+  history contains a refresh cancelled before it started (`StartTime` null
+  broke the JMESPath `sort_by`); the API's documented newest-first order is
+  used instead.
+- `check` took two refresh-state snapshots (which could disagree mid-deploy)
+  and read them before the fleet, so a deploy racing the watchdog could
+  raise a false drift alarm; it now takes one snapshot, after the fleet.
+
 ## [0.1.0] - 2026-07-19
 
 Initial release.
