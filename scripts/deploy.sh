@@ -157,9 +157,13 @@ asg_grace_period() {
 
 # Most recent instance refresh object, or empty when none exist.
 refresh_latest_json() {
+  # The API returns refreshes newest-first (documented); do NOT re-sort on
+  # StartTime — a refresh cancelled before it started has StartTime null,
+  # which crashes JMESPath sort_by.
   aws_cli autoscaling describe-instance-refreshes \
     --auto-scaling-group-name "$ASG_NAME" \
-    --query 'InstanceRefreshes | sort_by(@, &StartTime) | reverse(@)[0]'
+    --max-records 1 \
+    --query 'InstanceRefreshes[0]'
 }
 
 refresh_in_progress() {
