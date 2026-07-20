@@ -223,11 +223,26 @@ before and after it.
 | `history [-n N]` | The pointer history rendered as a deploy log. |
 | `current` | Print the pointer value only (script-friendly). |
 | `cancel` | Cancel an in-progress instance refresh. |
+| `check` | `status` plus anomaly detection; exits `6` on drift (cron/CI watchdog contract). |
 
 Notable flags: `--yes` (skip confirmation), `--incident` (skip the alarm gate
 during a live incident), `--alarms "n1,n2"` (deploy gate + auto-rollback),
 `--no-wait`, `--json`. Run `scripts/deploy.sh --help` for the full list and the
 documented exit codes.
+
+### Unattended drift detection
+
+`check` evaluates the conditions under which the fleet will not converge on
+the pointer by itself — a deregistered pointer AMI (breaks every future
+scale-out), instances running an AMI other than the pointer with no refresh
+in progress, a mixed-AMI fleet, a refresh that ended `Failed`/rolled back,
+and (with `--alarms`) any alarm not in `OK`. Wire it to a schedule and alert
+on the exit code:
+
+```bash
+# cron / CI schedule: alert when exit code != 0
+scripts/deploy.sh --asg my-asg --param /my/pointer --region us-east-1 check   || notify "drift detected: $(scripts/deploy.sh ... --json check | jq -c .anomalies)"
+```
 
 If the bad deploy's refresh is still running when you need to roll back, cancel
 it first — preflight refuses to start a refresh while one is in progress:

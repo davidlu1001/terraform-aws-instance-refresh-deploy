@@ -20,6 +20,9 @@
 #   history [-n N]             Show the pointer history as a deploy log.
 #   current                    Print the current pointer value only (script-friendly).
 #   cancel                     Cancel an in-progress instance refresh.
+#   check                      Status plus anomaly detection for unattended use
+#                              (cron/CI watchdogs): exits 6 when the fleet will
+#                              not converge on the pointer by itself.
 #
 # Global flags:
 #   --yes                      Skip the confirmation prompt.
@@ -43,6 +46,7 @@
 #   3  missing dependency (aws, jq, or bash < 4)
 #   4  preflight gate failed
 #   5  instance refresh finished in a non-successful state
+#   6  check: anomalies found
 #
 set -euo pipefail
 
@@ -53,6 +57,7 @@ readonly EXIT_USAGE=2
 readonly EXIT_DEP=3
 readonly EXIT_PREFLIGHT=4
 readonly EXIT_REFRESH=5
+readonly EXIT_CHECK=6
 
 # --- global state (set by argument parsing) ----------------------------------
 ASG_NAME=""
@@ -416,21 +421,26 @@ cmd_rollback() {
   start_refresh
 }
 
-cmd_status() {
-  local pointer refresh instances
-  pointer="$(pointer_current)"
-  refresh="$(refresh_latest_json)"
-  # Map running instances to the AMI they actually booted from.
+# Map running instances to the AMI they actually booted from.
+fleet_images_json() {
+  local instances
   instances="$(asg_describe \
     | jq -r '[.Instances[].InstanceId] | join(" ")')"
-
-  local running_json='[]'
-  if [[ -n "$instances" ]]; then
-    # shellcheck disable=SC2086
-    running_json="$(aws_cli ec2 describe-instances --instance-ids $instances \
-      --query 'Reservations[].Instances[].[InstanceId,ImageId]' \
-      | jq '[.[] | {InstanceId: .[0], ImageId: .[1]}]')"
+  if [[ -z "$instances" ]]; then
+    printf '[]'
+    return 0
   fi
+  # shellcheck disable=SC2086
+  aws_cli ec2 describe-instances --instance-ids $instances \
+    --query 'Reservations[].Instances[].[InstanceId,ImageId]' \
+    | jq '[.[] | {InstanceId: .[0], ImageId: .[1]}]'
+}
+
+cmd_status() {
+  local pointer refresh running_json
+  pointer="$(pointer_current)"
+  refresh="$(refresh_latest_json)"
+  running_json="$(fleet_images_json)"
 
   if [[ "$OPT_JSON" == true ]]; then
     jq -n \
@@ -453,6 +463,92 @@ cmd_status() {
     else group_by(.ImageId)[]
       | "  \(.[0].ImageId)  x\(length)" + (if .[0].ImageId == $p then "  <- pointer" else "  (drift)" end)
     end'
+}
+
+# check — status plus anomaly evaluation, built for unattended use (a cron
+# entry or CI schedule pointing at this exit code is a drift watchdog).
+# An anomaly is any condition under which the fleet will not, or can not,
+# converge on the pointer by itself. Drift checks are suppressed while a
+# refresh is in progress: convergence is literally underway.
+cmd_check() {
+  local pointer refresh fleet in_progress rstatus
+  local anomalies=()
+  pointer="$(pointer_current)"
+  refresh="$(refresh_latest_json)"
+  fleet="$(fleet_images_json)"
+  in_progress="$(refresh_in_progress)"
+  rstatus="$(printf '%s' "$refresh" | jq -r '
+    if . == null then "none" else .Status end')"
+
+  # Scale-outs resolve the pointer at launch: a deregistered or otherwise
+  # non-launchable pointer AMI silently breaks every future scale-out.
+  local ami_state
+  ami_state="$(aws_cli ec2 describe-images --image-ids "$pointer" \
+    --query 'Images[0].State' --output text 2>/dev/null || echo "missing")"
+  if [[ "$ami_state" != "available" ]]; then
+    anomalies+=("pointer AMI ${pointer} is not launchable (state: ${ami_state}); scale-outs will fail")
+  fi
+
+  if [[ "$in_progress" != "true" ]]; then
+    local distinct drifted
+    distinct="$(printf '%s' "$fleet" | jq '[.[].ImageId] | unique | length')"
+    drifted="$(printf '%s' "$fleet" | jq --arg p "$pointer" \
+      '[.[] | select(.ImageId != $p)] | length')"
+    if ((distinct > 1)); then
+      anomalies+=("fleet runs ${distinct} different AMIs with no refresh in progress")
+    fi
+    if ((drifted > 0)); then
+      anomalies+=("${drifted} instance(s) run an AMI other than the pointer with no refresh in progress")
+    fi
+  fi
+
+  # Cancelled is a deliberate operator action; any residue it left behind is
+  # already caught by the drift checks above.
+  case "$rstatus" in
+    Failed | RollbackFailed | RollbackSuccessful)
+      anomalies+=("latest refresh ended ${rstatus}; the fleet may not match the pointer")
+      ;;
+  esac
+
+  if [[ -n "$OPT_ALARMS" ]]; then
+    local names name alarm_state
+    IFS=',' read -r -a names <<<"$OPT_ALARMS"
+    for name in "${names[@]}"; do
+      [[ -n "$name" ]] || continue
+      alarm_state="$(aws_cli cloudwatch describe-alarms --alarm-names "$name" \
+        --query 'MetricAlarms[0].StateValue' --output text 2>/dev/null || echo "MISSING")"
+      if [[ "$alarm_state" != "OK" ]]; then
+        anomalies+=("alarm ${name} is ${alarm_state}")
+      fi
+    done
+  fi
+
+  if [[ "$OPT_JSON" == true ]]; then
+    local anomalies_json
+    anomalies_json="$(printf '%s\n' "${anomalies[@]:-}" \
+      | jq -R . | jq -s 'map(select(length > 0))')"
+    jq -n \
+      --arg pointer "$pointer" \
+      --argjson refresh "${refresh:-null}" \
+      --argjson instances "$fleet" \
+      --argjson anomalies "$anomalies_json" \
+      '{pointer: $pointer, refresh: $refresh, instances: $instances,
+        anomalies: $anomalies, ok: ($anomalies | length == 0)}'
+  else
+    printf 'Pointer (%s): %s\n' "$PARAM_NAME" "$pointer"
+    printf 'Latest refresh: %s\n' "$(printf '%s' "$refresh" | jq -r '
+      if . == null then "none"
+      else "\(.Status) \(.PercentageComplete // 0)%" end')"
+    if ((${#anomalies[@]} == 0)); then
+      info "check: OK (no anomalies)"
+    else
+      local a
+      for a in "${anomalies[@]}"; do
+        warn "check: ${a}"
+      done
+    fi
+  fi
+  ((${#anomalies[@]} == 0)) || exit "$EXIT_CHECK"
 }
 
 cmd_history() {
@@ -527,7 +623,7 @@ parse_args() {
 }
 
 usage() {
-  sed -n '3,45p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,49p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 main() {
@@ -544,6 +640,7 @@ main() {
     history) cmd_history ;;
     current) cmd_current ;;
     cancel) cmd_cancel ;;
+    check) cmd_check ;;
     *) die "$EXIT_USAGE" "unknown command: ${COMMAND}" ;;
   esac
 }

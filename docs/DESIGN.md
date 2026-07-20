@@ -199,3 +199,25 @@ manage only the pointer; the external ASG points its own launch template's
 parameter name — and lets adopters keep whatever ASG tooling they already trust.
 The pointer model is a pattern, not a framework; `create_asg = false` lets teams
 adopt the pattern with one line and zero migration.
+
+### D8 — Drift is detected, not assumed away (`check`)
+
+The pointer model has a failure mode the driver cannot see at deploy time:
+the fleet and the pointer can diverge *later* — a refresh fails or is rolled
+back after the pointer moved, a scale-out races a pointer update, or the
+pointer's AMI gets deregistered (which silently breaks every future
+scale-out, since instances resolve the pointer at launch). None of these
+self-announce.
+
+`check` makes the divergence conditions explicit and machine-readable: it
+re-evaluates pointer launchability, fleet uniformity, fleet-vs-pointer
+drift, and the last refresh's terminal state, then exits `6` if the fleet
+will not converge on its own. Drift checks are suppressed while a refresh is
+in progress — convergence is then literally underway. The intended consumer
+is a schedule (cron, CI) alerting on the exit code; `--json` carries the
+anomaly list for the alert body.
+
+Rejected alternative: teaching `deploy` to self-verify after the fact. A
+deploy-time check cannot see problems that develop later, and the operator
+running a deploy is already watching; the unattended window is where drift
+hides.
