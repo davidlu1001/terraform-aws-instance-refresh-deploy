@@ -268,14 +268,17 @@ deploy.sh --asg my-app --param /deploy/my-app/ami-id rollback --incident --yes
 
 ## Blog series
 
-This module accompanies a series on ten years of deployment evolution — how a
-team that never adopted containers or blue/green still ships safely, and why the
-pointer-and-convergence model earns its keep. Placeholder links, to be filled in
-as the posts land:
+This module accompanies a seven-part series on ten years of deployment
+evolution for one legacy app on AWS — no Kubernetes required — and why the
+pointer-and-convergence model earns its keep:
 
-- Part 1 — Why the un-containerized majority still exists — <https://davidlu1001.me>
-- Part 2 — Pointer + convergence: a deploy in three moves — <https://davidlu1001.me>
-- Part 3 — Rolling back during an incident, and the alarm paradox — <https://davidlu1001.me>
+1. [Four generations of deploying the same legacy app](https://www.davidlu1001.me/article/four-generations-of-deployment)
+2. [Anatomy of a cascading incident: a PPA removal, an emergency AMI, and a four-year-old race condition](https://www.davidlu1001.me/article/anatomy-of-a-cascading-incident)
+3. [We reinvented container image layers — with AMIs](https://www.davidlu1001.me/article/container-image-layers-with-amis)
+4. [I audited my own four-year-old deploy script before replacing it](https://www.davidlu1001.me/article/auditing-my-own-deploy-script)
+5. [A 60-line deploy script: SSM Parameter Store as a release pointer](https://www.davidlu1001.me/article/ssm-parameter-release-pointer)
+6. [Rollback is a feature: drills, alarm gates, and an incident mode](https://www.davidlu1001.me/article/rollback-is-a-feature)
+7. [Capacity-adaptive instance refresh: measured numbers from a real fleet](https://www.davidlu1001.me/article/capacity-adaptive-instance-refresh)
 
 ## License
 
