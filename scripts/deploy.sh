@@ -30,6 +30,7 @@
 #                              Use only when rolling back during a live incident.
 #   --alarms "n1,n2"           Deploy-gate alarms; also attached to the refresh with
 #                              auto-rollback so it reverts if an alarm fires mid-roll.
+#                              With check: alarms that must be OK, else an anomaly.
 #   --auto-rollback            Force auto-rollback on (requires --alarms).
 #   --min-healthy N            Override MinHealthyPercentage.
 #   --max-healthy N            Override MaxHealthyPercentage.
@@ -172,7 +173,10 @@ refresh_latest_json() {
 }
 
 refresh_in_progress() {
-  refresh_latest_json | jq -r '
+  # Accepts a pre-fetched refresh JSON to avoid a second API call (and a
+  # second, possibly different, snapshot) when the caller already has one.
+  local json="${1:-$(refresh_latest_json)}"
+  printf '%s' "$json" | jq -r '
     if . == null then "false"
     elif (.Status | IN("Pending","InProgress","Cancelling","RollbackInProgress","Baking"))
     then "true" else "false" end'
@@ -226,6 +230,19 @@ preflight() {
   alarm_gate
 }
 
+# Emit one "name<TAB>state" line per --alarms entry not in OK state.
+# Shared by the deploy-time alarm gate and check's alarm evaluation.
+alarms_not_ok() {
+  local names name alarm_state
+  IFS=',' read -r -a names <<<"$OPT_ALARMS"
+  for name in "${names[@]}"; do
+    [[ -n "$name" ]] || continue
+    alarm_state="$(aws_cli cloudwatch describe-alarms --alarm-names "$name" \
+      --query 'MetricAlarms[0].StateValue' --output text 2>/dev/null || echo "MISSING")"
+    [[ "$alarm_state" == "OK" ]] || printf '%s\t%s\n' "$name" "$alarm_state"
+  done
+}
+
 alarm_gate() {
   [[ -n "$OPT_ALARMS" ]] || return 0
   if [[ "$OPT_INCIDENT" == true ]]; then
@@ -233,16 +250,10 @@ alarm_gate() {
     return 0
   fi
 
-  local names alarm_state bad=()
-  IFS=',' read -r -a names <<<"$OPT_ALARMS"
-  for name in "${names[@]}"; do
-    [[ -n "$name" ]] || continue
-    alarm_state="$(aws_cli cloudwatch describe-alarms --alarm-names "$name" \
-      --query 'MetricAlarms[0].StateValue' --output text 2>/dev/null || echo "MISSING")"
-    if [[ "$alarm_state" != "OK" ]]; then
-      bad+=("${name}=${alarm_state}")
-    fi
-  done
+  local name alarm_state bad=()
+  while IFS=$'\t' read -r name alarm_state; do
+    bad+=("${name}=${alarm_state}")
+  done < <(alarms_not_ok)
   if ((${#bad[@]} > 0)); then
     die "$EXIT_PREFLIGHT" \
       "deploy-gate alarms not OK: ${bad[*]}. Fix, or pass --incident to override."
@@ -474,9 +485,12 @@ cmd_check() {
   local pointer refresh fleet in_progress rstatus
   local anomalies=()
   pointer="$(pointer_current)"
-  refresh="$(refresh_latest_json)"
   fleet="$(fleet_images_json)"
-  in_progress="$(refresh_in_progress)"
+  # Refresh state is fetched AFTER the fleet on purpose: a deploy racing this
+  # check has its refresh visible by now, which suppresses the drift checks
+  # below instead of raising a false alarm on the not-yet-converged fleet.
+  refresh="$(refresh_latest_json)"
+  in_progress="$(refresh_in_progress "$refresh")"
   rstatus="$(printf '%s' "$refresh" | jq -r '
     if . == null then "none" else .Status end')"
 
@@ -511,16 +525,10 @@ cmd_check() {
   esac
 
   if [[ -n "$OPT_ALARMS" ]]; then
-    local names name alarm_state
-    IFS=',' read -r -a names <<<"$OPT_ALARMS"
-    for name in "${names[@]}"; do
-      [[ -n "$name" ]] || continue
-      alarm_state="$(aws_cli cloudwatch describe-alarms --alarm-names "$name" \
-        --query 'MetricAlarms[0].StateValue' --output text 2>/dev/null || echo "MISSING")"
-      if [[ "$alarm_state" != "OK" ]]; then
-        anomalies+=("alarm ${name} is ${alarm_state}")
-      fi
-    done
+    local name alarm_state
+    while IFS=$'\t' read -r name alarm_state; do
+      anomalies+=("alarm ${name} is ${alarm_state}")
+    done < <(alarms_not_ok)
   fi
 
   if [[ "$OPT_JSON" == true ]]; then
@@ -623,7 +631,7 @@ parse_args() {
 }
 
 usage() {
-  sed -n '3,49p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,50p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 main() {

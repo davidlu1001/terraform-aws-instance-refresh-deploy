@@ -240,9 +240,17 @@ and (with `--alarms`) any alarm not in `OK`. Wire it to a schedule and alert
 on the exit code:
 
 ```bash
-# cron / CI schedule: alert when exit code != 0
-scripts/deploy.sh --asg my-asg --param /my/pointer --region us-east-1 check   || notify "drift detected: $(scripts/deploy.sh ... --json check | jq -c .anomalies)"
+# cron / CI schedule: exit 6 means anomalies; the JSON already carries them,
+# so one invocation drives both the alert condition and the alert body.
+if ! out="$(scripts/deploy.sh --asg my-asg --param /my/pointer \
+    --region us-east-1 --json check)"; then
+  notify "drift detected: $(jq -c .anomalies <<<"$out")"
+fi
 ```
+
+A check that lands in the few seconds between a deploy's pointer write and
+its refresh starting will flag drift once; if that matters for your paging
+policy, alert on two consecutive failures.
 
 If the bad deploy's refresh is still running when you need to roll back, cancel
 it first — preflight refuses to start a refresh while one is in progress:
