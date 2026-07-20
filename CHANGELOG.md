@@ -4,7 +4,7 @@ All notable changes to this module are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-07-21
 
 ### Added
 
@@ -28,6 +28,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `check` took two refresh-state snapshots (which could disagree mid-deploy)
   and read them before the fleet, so a deploy racing the watchdog could
   raise a false drift alarm; it now takes one snapshot, after the fleet.
+
+## [0.1.1] - 2026-07-20
+
+### Added
+
+- Blue/green section in the release-pointer migration guide.
 
 ## [0.1.0] - 2026-07-19
 
@@ -59,4 +65,6 @@ Initial release.
 - `docs/DESIGN.md` documenting the pointer + convergence model and decisions
   D1–D7, and a CI workflow running fmt, validate, tflint, and shellcheck.
 
+[0.2.0]: https://github.com/davidlu1001/terraform-aws-instance-refresh-deploy/releases/tag/v0.2.0
+[0.1.1]: https://github.com/davidlu1001/terraform-aws-instance-refresh-deploy/releases/tag/v0.1.1
 [0.1.0]: https://github.com/davidlu1001/terraform-aws-instance-refresh-deploy/releases/tag/v0.1.0
