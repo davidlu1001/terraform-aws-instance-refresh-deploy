@@ -8,6 +8,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A mistyped `--asg` made `deploy` write the pointer FIRST and then die on a
+  cryptic arithmetic error (null desired capacity) — a half-applied state —
+  while `status`/`check`/`cancel` died iterating null in jq. All commands
+  that touch the ASG now fail fast with a clear "ASG not found" message,
+  and the deploy preflight runs the check before the pointer is written.
+- A single transient API error while polling a refresh killed the deploy
+  watcher (reported failure while the refresh kept running server-side).
+  Up to 3 consecutive poll failures are now retried; on the 4th the script
+  exits with a message pointing at `status`, without claiming the deploy
+  failed.
+- An `--alarms` entry naming a nonexistent alarm was reported with the
+  meaningless state `None`; it now reports `MISSING` (a config typo).
+
 - `status`/`check` counted every ASG instance regardless of lifecycle state.
   A `Terminating` instance — which can linger for minutes to hours behind a
   termination lifecycle hook — still runs the pre-deploy AMI, so an

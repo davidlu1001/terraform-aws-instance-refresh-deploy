@@ -123,6 +123,17 @@ require_context() {
     "no region set; pass --region or export AWS_REGION."
 }
 
+# Fail fast (and legibly) on a mistyped/absent ASG. Without this, deploy
+# would write the pointer FIRST and then die in arithmetic on a null desired
+# capacity — a half-applied state with a cryptic error — and the read-only
+# commands would die iterating null in jq, which for an unattended check
+# means a config typo surfaces as noise instead of a clear message.
+require_asg() {
+  local code="${1:-1}"
+  [[ "$(asg_describe)" != "null" ]] \
+    || die "$code" "ASG ${ASG_NAME} not found in region ${REGION}."
+}
+
 # --- SSM pointer operations --------------------------------------------------
 pointer_current() {
   aws_cli ssm get-parameter --name "$PARAM_NAME" \
@@ -207,6 +218,10 @@ preflight() {
   local target="$1"
   info "Preflight checks"
 
+  # Before anything else: the ASG must exist. Every later step assumes it,
+  # and the pointer write must never happen against a mistyped --asg.
+  require_asg "$EXIT_PREFLIGHT"
+
   local state
   state="$(aws_cli ec2 describe-images --image-ids "$target" \
     --query 'Images[0].State' --output text 2>/dev/null || echo "missing")"
@@ -242,6 +257,11 @@ alarms_not_ok() {
     [[ -n "$name" ]] || continue
     alarm_state="$(aws_cli cloudwatch describe-alarms --alarm-names "$name" \
       --query 'MetricAlarms[0].StateValue' --output text 2>/dev/null || echo "MISSING")"
+    # A nonexistent alarm is an empty result, not an API error — surface it
+    # as MISSING (a config typo), not as the meaningless state "None".
+    if [[ "$alarm_state" == "None" ]]; then
+      alarm_state="MISSING"
+    fi
     [[ "$alarm_state" == "OK" ]] || printf '%s\t%s\n' "$name" "$alarm_state"
   done
 }
@@ -374,13 +394,27 @@ start_refresh() {
 }
 
 wait_for_refresh() {
-  local refresh_id="$1" status pct row
+  local refresh_id="$1" status pct row poll_failures=0
   info "Waiting for refresh ${refresh_id} (poll ${POLL_INTERVAL}s)"
   while true; do
-    row="$(aws_cli autoscaling describe-instance-refreshes \
+    # A transient polling error must not kill the watcher: the refresh itself
+    # keeps running server-side either way. Tolerate a few failures in a row,
+    # then bail with a pointer to `status` rather than pretend the DEPLOY
+    # failed — only the watching did.
+    if ! row="$(aws_cli autoscaling describe-instance-refreshes \
       --auto-scaling-group-name "$ASG_NAME" \
       --instance-refresh-ids "$refresh_id" \
-      --query 'InstanceRefreshes[0].[Status,PercentageComplete]' --output text)"
+      --query 'InstanceRefreshes[0].[Status,PercentageComplete]' \
+      --output text 2>/dev/null)"; then
+      poll_failures=$((poll_failures + 1))
+      if ((poll_failures >= 4)); then
+        die 1 "could not read refresh state ${poll_failures} times in a row; the refresh continues server-side — track it with the 'status' command."
+      fi
+      warn "refresh state poll failed (${poll_failures}/4); retrying."
+      sleep "$POLL_INTERVAL"
+      continue
+    fi
+    poll_failures=0
     status="$(printf '%s' "$row" | awk '{print $1}')"
     pct="$(printf '%s' "$row" | awk '{print $2}')"
     [[ "$pct" == "None" || -z "$pct" ]] && pct=0
@@ -440,7 +474,10 @@ cmd_rollback() {
 # pointer at launch), and a Terminating one — which can linger for minutes to
 # hours behind a termination lifecycle hook — would otherwise read as drift
 # right after a successful deploy and turn an unattended check red on
-# perfectly healthy state.
+# perfectly healthy state. Deliberately outside the count: Standby and warm
+# pool (Warmed:*) instances — they are not serving, and this module does not
+# target warm pools (a warm instance resolved the pointer when it was
+# launched, so warm pools + a moving pointer need their own strategy).
 fleet_images_json() {
   local instances
   instances="$(asg_describe \
@@ -457,6 +494,7 @@ fleet_images_json() {
 
 cmd_status() {
   local pointer refresh running_json
+  require_asg
   pointer="$(pointer_current)"
   refresh="$(refresh_latest_json)"
   running_json="$(fleet_images_json)"
@@ -495,6 +533,7 @@ cmd_check() {
   if [[ -n "$OPT_MAX_REFRESH_MIN" && ! "$OPT_MAX_REFRESH_MIN" =~ ^[0-9]+$ ]]; then
     die "$EXIT_USAGE" "--max-refresh-minutes expects a whole number of minutes."
   fi
+  require_asg
   pointer="$(pointer_current)"
   fleet="$(fleet_images_json)"
   # Refresh state is fetched AFTER the fleet on purpose: a deploy racing this
@@ -616,6 +655,7 @@ cmd_current() {
 }
 
 cmd_cancel() {
+  require_asg
   if [[ "$(refresh_in_progress)" != "true" ]]; then
     die 1 "no instance refresh is currently in progress."
   fi
