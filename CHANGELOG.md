@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`check --latest-ami-filter <pattern>`** (opt-in) — name pattern for your
+  baked AMIs. When a self-owned available AMI matching it is newer than the
+  pointer AMI, `check` flags it: the image was baked but never deployed. The
+  drift checks catch a deploy that stopped halfway; this catches one that
+  never started (bake pipeline ran, nobody moved the pointer) — a state in
+  which fleet and pointer agree and everything else reports green. Off by
+  default: the naming convention is yours.
+
 ### Fixed
 
 - A mistyped `--asg` made `deploy` write the pointer FIRST and then die on a

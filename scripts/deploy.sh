@@ -41,6 +41,11 @@
 #   --json                     Machine-readable output for status/current/history.
 #   --max-refresh-minutes N    check: treat an in-progress refresh older than N
 #                              minutes as an anomaly (off by default).
+#   --latest-ami-filter PAT    check: name pattern (EC2 filter syntax) for your
+#                              baked AMIs. If a self-owned available AMI matching
+#                              it is newer than the pointer AMI, that image was
+#                              baked but never deployed — flagged as an anomaly.
+#                              Off by default (the convention is yours).
 #
 # Exit codes:
 #   0  success
@@ -81,6 +86,7 @@ OPT_WARMUP=""
 OPT_NO_WAIT=false
 OPT_JSON=false
 OPT_MAX_REFRESH_MIN=""
+OPT_LATEST_FILTER=""
 OPT_ROLLBACK_TO=""
 OPT_HISTORY_N=10
 
@@ -553,6 +559,30 @@ cmd_check() {
     anomalies+=("pointer AMI ${pointer} is not launchable (state: ${ami_state}); scale-outs will fail")
   fi
 
+  # Opt-in baked-but-never-deployed detection. The drift checks below catch a
+  # deploy that stopped halfway; this catches one that never STARTED — a bake
+  # pipeline produced a fresh image and nobody moved the pointer. Fleet and
+  # pointer agree, so without this the check stays green while the fleet sits
+  # on the old image. Self-quieting: deploying the newer AMI clears it.
+  if [[ -n "$OPT_LATEST_FILTER" ]]; then
+    local latest_id latest_created pointer_created
+    read -r latest_id latest_created < <(aws_cli ec2 describe-images --owners self \
+      --filters "Name=name,Values=${OPT_LATEST_FILTER}" "Name=state,Values=available" \
+      --query 'sort_by(Images,&CreationDate)[-1].[ImageId,CreationDate]' \
+      --output text 2>/dev/null) || { latest_id=""; latest_created=""; }
+    if [[ -n "$latest_id" && "$latest_id" != "None" && "$latest_id" != "$pointer" ]]; then
+      pointer_created="$(aws_cli ec2 describe-images --image-ids "$pointer" \
+        --query 'Images[0].CreationDate' --output text 2>/dev/null || echo "")"
+      # ISO-8601 compares lexicographically. Only a NEWER matching image is an
+      # anomaly — a pointer ahead of (or outside) the naming convention is not
+      # a staleness problem.
+      if [[ -n "$pointer_created" && "$pointer_created" != "None" \
+            && "$latest_created" > "$pointer_created" ]]; then
+        anomalies+=("AMI ${latest_id} (created ${latest_created%%T*}) matches --latest-ami-filter and is newer than the pointer AMI — baked but never deployed; deploy it (or deregister it if abandoned)")
+      fi
+    fi
+  fi
+
   if [[ "$in_progress" != "true" ]]; then
     local distinct drifted
     distinct="$(printf '%s' "$fleet" | jq '[.[].ImageId] | unique | length')"
@@ -684,6 +714,7 @@ parse_args() {
       --no-wait) OPT_NO_WAIT=true; shift ;;
       --json) OPT_JSON=true; shift ;;
       --max-refresh-minutes) OPT_MAX_REFRESH_MIN="$2"; shift 2 ;;
+      --latest-ami-filter) OPT_LATEST_FILTER="$2"; shift 2 ;;
       --to) OPT_ROLLBACK_TO="$2"; shift 2 ;;
       --previous) shift ;;
       -n) OPT_HISTORY_N="$2"; shift 2 ;;
