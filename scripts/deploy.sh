@@ -435,11 +435,16 @@ cmd_rollback() {
   start_refresh
 }
 
-# Map running instances to the AMI they actually booted from.
+# Map running instances to the AMI they actually booted from. Only InService
+# instances count: a Pending instance is still converging (it resolved the
+# pointer at launch), and a Terminating one — which can linger for minutes to
+# hours behind a termination lifecycle hook — would otherwise read as drift
+# right after a successful deploy and turn an unattended check red on
+# perfectly healthy state.
 fleet_images_json() {
   local instances
   instances="$(asg_describe \
-    | jq -r '[.Instances[].InstanceId] | join(" ")')"
+    | jq -r '[.Instances[] | select(.LifecycleState == "InService") | .InstanceId] | join(" ")')"
   if [[ -z "$instances" ]]; then
     printf '[]'
     return 0
@@ -518,7 +523,7 @@ cmd_check() {
       anomalies+=("fleet runs ${distinct} different AMIs with no refresh in progress")
     fi
     if ((drifted > 0)); then
-      anomalies+=("${drifted} instance(s) run an AMI other than the pointer with no refresh in progress")
+      anomalies+=("${drifted} instance(s) run an AMI other than the pointer with no refresh in progress; converge with: deploy ${pointer}")
     fi
   fi
 
@@ -546,7 +551,7 @@ cmd_check() {
   # already caught by the drift checks above.
   case "$rstatus" in
     Failed | RollbackFailed | RollbackSuccessful)
-      anomalies+=("latest refresh ended ${rstatus}; the fleet may not match the pointer")
+      anomalies+=("latest refresh ended ${rstatus}; the fleet may not match the pointer — re-run deploy (or rollback) to converge")
       ;;
   esac
 

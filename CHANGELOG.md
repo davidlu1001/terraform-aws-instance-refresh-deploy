@@ -4,6 +4,25 @@ All notable changes to this module are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `status`/`check` counted every ASG instance regardless of lifecycle state.
+  A `Terminating` instance — which can linger for minutes to hours behind a
+  termination lifecycle hook — still runs the pre-deploy AMI, so an
+  unattended `check` running right after a successful deploy could report
+  fleet drift (exit 6) on perfectly healthy state. Only `InService`
+  instances are counted now; `Pending` instances are likewise excluded
+  (they resolved the pointer at launch and are still converging).
+
+### Changed
+
+- The two convergence anomalies in `check` now carry their remedy in the
+  message ("converge with: deploy <pointer-ami>" / "re-run deploy (or
+  rollback) to converge") — an unattended watchdog alert should name the
+  fix, not just the condition.
+
 ## [0.2.0] - 2026-07-21
 
 ### Added
